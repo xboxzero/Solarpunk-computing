@@ -15,7 +15,6 @@
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "esp_spiffs.h"
-#include "esp_adc/adc_oneshot.h"
 #include "driver/gpio.h"
 
 #include <cstring>
@@ -206,29 +205,14 @@ int engine_run(const char* script, char* output, int output_size) {
 
     if (strncmp(script, "adc ", 4) == 0) {
         int pin = atoi(script + 4);
-        // Use oneshot ADC for arbitrary pin reading
-        adc_oneshot_unit_handle_t adc_handle;
-        adc_oneshot_unit_init_cfg_t unit_cfg = {
-            .unit_id = ADC_UNIT_1,
-        };
-        if (adc_oneshot_new_unit(&unit_cfg, &adc_handle) == ESP_OK) {
-            adc_oneshot_chan_cfg_t chan_cfg = {
-                .atten = ADC_ATTEN_DB_12,
-                .bitwidth = ADC_BITWIDTH_12,
-            };
-            adc_channel_t chan = (adc_channel_t)pin;
-            if (adc_oneshot_config_channel(adc_handle, chan, &chan_cfg) == ESP_OK) {
-                int raw = 0;
-                adc_oneshot_read(adc_handle, chan, &raw);
-                int mv = raw * 3100 / 4095;
-                snprintf(output, output_size, "ADC ch%d: raw=%d mv=%d", pin, raw, mv);
-            } else {
-                snprintf(output, output_size, "invalid ADC channel: %d", pin);
-            }
-            adc_oneshot_del_unit(adc_handle);
+        // Use the solar module's cached readings for battery/solar pins
+        if (pin == SP_BATTERY_ADC_PIN) {
+            snprintf(output, output_size, "ADC ch%d (battery): %dmV", pin, solar_battery_mv());
+        } else if (pin == SP_SOLAR_ADC_PIN) {
+            snprintf(output, output_size, "ADC ch%d (solar): %dmV", pin, solar_panel_mv());
         } else {
-            snprintf(output, output_size, "ADC init failed");
-            return -1;
+            snprintf(output, output_size, "ADC ch%d: use battery(ch%d) or solar(ch%d)",
+                     pin, SP_BATTERY_ADC_PIN, SP_SOLAR_ADC_PIN);
         }
         return 0;
     }
@@ -362,7 +346,8 @@ int engine_run(const char* script, char* output, int output_size) {
         int secs = atoi(script + 6);
         if (secs > 0) {
             snprintf(output, output_size, "sleeping %ds...", secs);
-            return 0;
+            sleep_enter_deep((uint64_t)secs * 1000000ULL);
+            return 0;  // Won't reach here
         }
         snprintf(output, output_size, "usage: sleep <seconds>");
         return -1;

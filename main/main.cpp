@@ -114,6 +114,13 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
 }
 
 extern "C" void app_main(void) {
+    // Suppress noisy WiFi/phy driver logs (DTIM spam)
+    esp_log_level_set("wifi", ESP_LOG_WARN);
+    esp_log_level_set("wifi_init", ESP_LOG_WARN);
+    esp_log_level_set("phy", ESP_LOG_WARN);
+    esp_log_level_set("phy_init", ESP_LOG_WARN);
+    esp_log_level_set("esp_netif_handlers", ESP_LOG_WARN);
+
     ESP_LOGI(TAG, "=================================");
     ESP_LOGI(TAG, "  Solarpunk Wearable Computer");
     ESP_LOGI(TAG, "  Firmware %s", SP_FIRMWARE_VERSION);
@@ -148,6 +155,20 @@ extern "C" void app_main(void) {
     // If we woke from mesh-sleep, just do a quick listen and go back to sleep
     if (wakeup == ESP_SLEEP_WAKEUP_TIMER && battery_pct > SP_BATTERY_CRITICAL_PCT) {
         ESP_LOGI(TAG, "Mesh-sleep wake: listening for %dms", SP_LISTEN_WINDOW_MS);
+
+        // WiFi must be initialized before ESP-NOW
+        esp_netif_create_default_wifi_ap();
+        wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+        ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+        wifi_config_t ap_cfg = {};
+        strncpy((char*)ap_cfg.ap.ssid, "SP-mesh", sizeof(ap_cfg.ap.ssid));
+        ap_cfg.ap.channel = SP_WIFI_CHANNEL;
+        ap_cfg.ap.authmode = WIFI_AUTH_OPEN;
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
+        ESP_ERROR_CHECK(esp_wifi_start());
+
+        crypto_init();
         mesh_init();
         mesh_quick_listen(SP_LISTEN_WINDOW_MS);
         sleep_enter_mesh_sleep();
