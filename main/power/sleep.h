@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 // Deep sleep + power saving
 // Manages idle detection and mesh-sleep coordination
 

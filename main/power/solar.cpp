@@ -38,9 +38,15 @@ void solar_update() {
 
     // Read battery voltage (through voltage divider, so multiply by 2)
     if (adc_oneshot_read(adc_handle, (adc_channel_t)SP_BATTERY_ADC_PIN, &raw) == ESP_OK) {
-        // ESP32-S3 ADC: 0-4095 maps to 0-3100mV at 12dB attenuation
+        // ADC: 0-4095 maps to 0-3100mV at 12dB attenuation
         // Voltage divider halves, so actual = reading * 2
-        battery_mv = (raw * 3100 / 4095) * 2;
+        int reading = (raw * 3100 / 4095) * 2;
+        // If no battery connected (reading below meaningful LiPo range), assume USB powered
+        if (reading < SP_BATTERY_EMPTY_MV) {
+            battery_mv = SP_BATTERY_FULL_MV;
+        } else {
+            battery_mv = reading;
+        }
     }
 
     // Read solar panel voltage

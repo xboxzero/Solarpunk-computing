@@ -9,6 +9,7 @@
 
 #include "esp_now.h"
 #include "esp_wifi.h"
+#include "esp_mac.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"

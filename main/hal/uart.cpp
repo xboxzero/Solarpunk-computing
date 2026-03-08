@@ -2,6 +2,7 @@
 
 #include "uart.h"
 #include "driver/uart.h"
+#include <cstring>
 
 namespace solarpunk {
 

@@ -10,11 +10,15 @@
 #include "power/sleep.h"
 #include "scripting/engine.h"
 
+#include <cstring>
+
 #include "esp_system.h"
+#include "esp_mac.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_sleep.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -45,10 +49,11 @@ static void wifi_ap_init(const char* ssid) {
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
 
-    // Reduce TX power to save energy (8dBm is enough for nearby phone)
-    ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(32));  // 8dBm (units of 0.25dBm)
-
     ESP_ERROR_CHECK(esp_wifi_start());
+
+    // Reduce TX power to save energy (8dBm is enough for nearby phone)
+    // Must be called after esp_wifi_start()
+    esp_wifi_set_max_tx_power(32);  // 8dBm (units of 0.25dBm)
 
     ESP_LOGI(TAG, "WiFi AP started: %s (open, ch%d)", ssid, SP_WIFI_CHANNEL);
 }

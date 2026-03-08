@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 // ESP-NOW mesh networking layer
 // Handles send/receive, relay, peer tracking
 

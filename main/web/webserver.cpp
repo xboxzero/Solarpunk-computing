@@ -9,7 +9,11 @@
 
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_system.h"
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
 
 static const char* TAG = "webserver";
 static httpd_handle_t server = NULL;
@@ -167,11 +171,11 @@ static esp_err_t ws_handler(httpd_req_t* req) {
             engine_run((const char*)buf, output, sizeof(output));
 
             // Send response back
-            httpd_ws_frame_t resp = {};
-            resp.type = HTTPD_WS_TYPE_TEXT;
-            resp.payload = (uint8_t*)output;
-            resp.len = strlen(output);
-            httpd_ws_send_frame(req, &resp);
+            httpd_ws_frame_t ws_resp = {};
+            ws_resp.type = HTTPD_WS_TYPE_TEXT;
+            ws_resp.payload = (uint8_t*)output;
+            ws_resp.len = strlen(output);
+            httpd_ws_send_frame(req, &ws_resp);
         }
         free(buf);
     }
@@ -215,28 +219,30 @@ void webserver_init() {
         return;
     }
 
+    // Helper to register URI handlers
+    auto reg = [&](const char* uri, httpd_method_t method, esp_err_t (*handler)(httpd_req_t*), bool websocket = false) {
+        httpd_uri_t u = {};
+        u.uri = uri;
+        u.method = method;
+        u.handler = handler;
+        u.is_websocket = websocket;
+        httpd_register_uri_handler(server, &u);
+    };
+
     // Static files
-    httpd_uri_t uri_index = { .uri = "/", .method = HTTP_GET, .handler = index_handler };
-    httpd_uri_t uri_css = { .uri = "/style.css", .method = HTTP_GET, .handler = css_handler };
-    httpd_uri_t uri_js = { .uri = "/app.js", .method = HTTP_GET, .handler = js_handler };
+    reg("/",          HTTP_GET, index_handler);
+    reg("/style.css", HTTP_GET, css_handler);
+    reg("/app.js",    HTTP_GET, js_handler);
 
     // API endpoints
-    httpd_uri_t uri_status = { .uri = "/api/status", .method = HTTP_GET, .handler = status_handler };
-    httpd_uri_t uri_run = { .uri = "/api/run", .method = HTTP_POST, .handler = run_handler };
-    httpd_uri_t uri_mesh_send = { .uri = "/api/mesh/send", .method = HTTP_POST, .handler = mesh_send_handler };
-    httpd_uri_t uri_mesh_peers = { .uri = "/api/mesh/peers", .method = HTTP_GET, .handler = mesh_peers_handler };
+    reg("/api/status",     HTTP_GET,  status_handler);
+    reg("/api/run",        HTTP_POST, run_handler);
+    reg("/api/mesh/send",  HTTP_POST, mesh_send_handler);
+    reg("/api/mesh/peers", HTTP_GET,  mesh_peers_handler);
 
     // WebSocket (terminal)
-    httpd_uri_t uri_ws = { .uri = "/ws", .method = HTTP_GET, .handler = ws_handler, .is_websocket = true };
+    reg("/ws", HTTP_GET, ws_handler, true);
 
-    httpd_register_uri_handler(server, &uri_index);
-    httpd_register_uri_handler(server, &uri_css);
-    httpd_register_uri_handler(server, &uri_js);
-    httpd_register_uri_handler(server, &uri_status);
-    httpd_register_uri_handler(server, &uri_run);
-    httpd_register_uri_handler(server, &uri_mesh_send);
-    httpd_register_uri_handler(server, &uri_mesh_peers);
-    httpd_register_uri_handler(server, &uri_ws);
 
     ESP_LOGI(TAG, "Web IDE server started on port %d", config.server_port);
 }
