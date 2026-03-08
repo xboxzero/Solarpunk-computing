@@ -1,0 +1,17 @@
+Component,Part Number,Description,Quantity,Approx Price (USD),Source
+MCU,ESP32-S3-WROOM-1-N8R8,ESP32-S3 8MB Flash 8MB PSRAM,1,3.50,LCSC/Digikey
+Solar Panel,5V 1W 80x60mm,Monocrystalline solar panel,1,2.00,AliExpress
+Charge IC,TP4056,LiPo charge controller,1,0.10,LCSC
+Protection IC,DW01A + FS8205A,Battery protection circuit,1,0.15,LCSC
+Battery,3.7V 1000mAh LiPo,502535 pouch cell,1,3.00,AliExpress
+LDO,ME6211C33M5G,3.3V 500mA ultra-low Iq (40uA),1,0.10,LCSC
+Capacitor,100uF 10V,Input/output caps,2,0.10,LCSC
+Capacitor,100nF 0402,Bypass capacitors,4,0.05,LCSC
+Resistor,100K 0402,Voltage divider for ADC,2,0.02,LCSC
+USB Connector,USB-C 6pin,Power + programming,1,0.15,LCSC
+LED,0402 Green,Status indicator,1,0.02,LCSC
+OLED (optional),SSD1306 0.96 inch I2C,Status display,1,2.50,AliExpress
+PCB,Custom 2-layer 40x30mm,Main board,1,1.00,JLCPCB
+Enclosure,3D printed PLA/PETG,Wrist-mount case,1,0.50,Self
+Strap (optional),22mm watch band,Wrist attachment,1,2.00,AliExpress
+TOTAL,,,,~15.00,

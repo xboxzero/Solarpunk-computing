@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Solarpunk Node</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header>
+  <div class="status-bar">
+    <span class="node-name" id="nodeName">Solarpunk Node</span>
+    <span class="indicators">
+      <span id="batteryIcon">--</span>
+      <span id="solarIcon"></span>
+      <span id="peersIcon">0 peers</span>
+    </span>
+  </div>
+  <nav>
+    <button class="tab active" data-tab="terminal">Terminal</button>
+    <button class="tab" data-tab="editor">Editor</button>
+    <button class="tab" data-tab="mesh">Mesh</button>
+    <button class="tab" data-tab="status">Status</button>
+  </nav>
+</header>
+
+<!-- Terminal Tab -->
+<section id="terminal" class="panel active">
+  <div id="termOutput" class="term-output"></div>
+  <div class="term-input-row">
+    <span class="prompt">$</span>
+    <input type="text" id="termInput" class="term-input"
+           placeholder="Type a command..." autocomplete="off"
+           autocapitalize="off" autocorrect="off" spellcheck="false">
+  </div>
+</section>
+
+<!-- Editor Tab -->
+<section id="editor" class="panel">
+  <div class="editor-toolbar">
+    <input type="text" id="fileName" class="file-name" value="script.py" placeholder="filename">
+    <button id="runBtn" class="btn btn-run">Run</button>
+    <button id="saveBtn" class="btn">Save</button>
+  </div>
+  <textarea id="codeEditor" class="code-editor" spellcheck="false"
+            placeholder="# Write your script here..."></textarea>
+  <div id="editorOutput" class="editor-output"></div>
+</section>
+
+<!-- Mesh Tab -->
+<section id="mesh" class="panel">
+  <h2>Mesh Network</h2>
+  <div id="peerList" class="peer-list">
+    <p class="muted">Scanning for peers...</p>
+  </div>
+  <div class="mesh-chat">
+    <div id="chatMessages" class="chat-messages"></div>
+    <div class="chat-input-row">
+      <input type="text" id="chatInput" class="chat-input" placeholder="Send to mesh...">
+      <button id="chatSend" class="btn">Send</button>
+    </div>
+  </div>
+</section>
+
+<!-- Status Tab -->
+<section id="status" class="panel">
+  <h2>Device Status</h2>
+  <div id="statusInfo" class="status-grid">
+    <p class="muted">Loading...</p>
+  </div>
+</section>
+
+<script src="/app.js"></script>
+</body>
+</html>
