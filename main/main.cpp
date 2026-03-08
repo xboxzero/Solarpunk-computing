@@ -9,6 +9,8 @@
 #include "power/solar.h"
 #include "power/sleep.h"
 #include "scripting/engine.h"
+#include "llm/llm_client.h"
+#include "security/crypto.h"
 
 #include <cstring>
 
@@ -32,42 +34,82 @@ static void get_node_name(char* buf, size_t len) {
     snprintf(buf, len, "%s-%02X%02X", SP_DEVICE_NAME, mac[4], mac[5]);
 }
 
-// Initialize WiFi in AP mode (captive portal for iPhone)
-static void wifi_ap_init(const char* ssid) {
+// Station mode connection tracking
+static bool sta_connected = false;
+
+// Initialize WiFi in AP+STA mode (AP for phone, STA for Pi server)
+static void wifi_init(const char* ap_ssid) {
     esp_netif_create_default_wifi_ap();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    wifi_config_t wifi_config = {};
-    strncpy((char*)wifi_config.ap.ssid, ssid, sizeof(wifi_config.ap.ssid));
-    wifi_config.ap.ssid_len = strlen(ssid);
-    wifi_config.ap.channel = SP_WIFI_CHANNEL;
-    wifi_config.ap.max_connection = SP_WIFI_MAX_CLIENTS;
-    wifi_config.ap.authmode = WIFI_AUTH_OPEN;  // No password -- easy iPhone connect
+    // AP config (for phone connections)
+    wifi_config_t ap_config = {};
+    strncpy((char*)ap_config.ap.ssid, ap_ssid, sizeof(ap_config.ap.ssid));
+    ap_config.ap.ssid_len = strlen(ap_ssid);
+    ap_config.ap.channel = SP_WIFI_CHANNEL;
+    ap_config.ap.max_connection = SP_WIFI_MAX_CLIENTS;
+    ap_config.ap.authmode = WIFI_AUTH_OPEN;
 
+#if SP_STA_ENABLED
+    // AP+STA mode: serve phone AND connect to Pi's network
+    esp_netif_create_default_wifi_sta();
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
+
+    // STA config (connect to Pi's network)
+    wifi_config_t sta_config = {};
+    strncpy((char*)sta_config.sta.ssid, SP_STA_SSID, sizeof(sta_config.sta.ssid));
+    strncpy((char*)sta_config.sta.password, SP_STA_PASS, sizeof(sta_config.sta.password));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_config));
+
+    ESP_LOGI(TAG, "WiFi AP+STA mode: AP=%s, STA=%s", ap_ssid, SP_STA_SSID);
+#else
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
+    ESP_LOGI(TAG, "WiFi AP mode: %s", ap_ssid);
+#endif
 
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    // Reduce TX power to save energy (8dBm is enough for nearby phone)
-    // Must be called after esp_wifi_start()
-    esp_wifi_set_max_tx_power(32);  // 8dBm (units of 0.25dBm)
+#if SP_STA_ENABLED
+    // Try to connect to Pi's network
+    ESP_LOGI(TAG, "Connecting to %s...", SP_STA_SSID);
+    esp_wifi_connect();
+#endif
 
-    ESP_LOGI(TAG, "WiFi AP started: %s (open, ch%d)", ssid, SP_WIFI_CHANNEL);
+    // Reduce TX power to save energy
+    esp_wifi_set_max_tx_power(32);  // 8dBm
 }
 
 // WiFi event handler
+static int sta_retry_count = 0;
+
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
                                 int32_t event_id, void* event_data) {
-    if (event_id == WIFI_EVENT_AP_STACONNECTED) {
-        wifi_event_ap_staconnected_t* event = (wifi_event_ap_staconnected_t*)event_data;
-        ESP_LOGI(TAG, "Client connected (AID=%d)", event->aid);
-        // Reset idle timer -- someone is using us
-        sleep_reset_idle();
-    } else if (event_id == WIFI_EVENT_AP_STADISCONNECTED) {
-        ESP_LOGI(TAG, "Client disconnected");
+    if (event_base == WIFI_EVENT) {
+        if (event_id == WIFI_EVENT_AP_STACONNECTED) {
+            wifi_event_ap_staconnected_t* event = (wifi_event_ap_staconnected_t*)event_data;
+            ESP_LOGI(TAG, "Client connected (AID=%d)", event->aid);
+            sleep_reset_idle();
+        } else if (event_id == WIFI_EVENT_AP_STADISCONNECTED) {
+            ESP_LOGI(TAG, "Client disconnected");
+        } else if (event_id == WIFI_EVENT_STA_DISCONNECTED) {
+            sta_connected = false;
+            if (sta_retry_count < SP_STA_RETRY_MAX) {
+                sta_retry_count++;
+                ESP_LOGI(TAG, "STA reconnecting (%d/%d)...", sta_retry_count, SP_STA_RETRY_MAX);
+                esp_wifi_connect();
+            } else {
+                ESP_LOGW(TAG, "STA connection failed after %d retries", SP_STA_RETRY_MAX);
+            }
+        }
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t* event = (ip_event_got_ip_t*)event_data;
+        ESP_LOGI(TAG, "Connected to Pi network! IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        sta_connected = true;
+        sta_retry_count = 0;
     }
 }
 
@@ -88,6 +130,7 @@ extern "C" void app_main(void) {
     // Initialize event loop
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL);
+    esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL);
 
     // Initialize network interface
     ESP_ERROR_CHECK(esp_netif_init());
@@ -123,21 +166,27 @@ extern "C" void app_main(void) {
     get_node_name(node_name, sizeof(node_name));
     ESP_LOGI(TAG, "Node: %s", node_name);
 
-    // Start WiFi AP
-    wifi_ap_init(node_name);
+    // Initialize encryption first (mesh needs it)
+    crypto_init();
+
+    // Start WiFi (AP + optional STA for Pi connection)
+    wifi_init(node_name);
 
     // Start captive portal (DNS redirect for iPhone auto-open)
     captive_init();
 
-    // Start web IDE server
+    // Start web server (minimal terminal)
     webserver_init();
 
-    // Start mesh networking
+    // Start mesh networking (AES-256-GCM encrypted)
     mesh_init();
     discovery_init();
 
     // Start script engine
     engine_init();
+
+    // Initialize LLM agent
+    llm_init();
 
     // Low battery? Disable non-essential features
     if (battery_pct < SP_BATTERY_LOW_PCT) {

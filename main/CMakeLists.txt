@@ -10,6 +10,8 @@ idf_component_register(
         "scripting/engine.cpp"
         "hal/uart.cpp"
         "hal/gpio.cpp"
+        "llm/llm_client.cpp"
+        "security/crypto.cpp"
     INCLUDE_DIRS "."
     EMBED_FILES
         "web/static/index.html"
