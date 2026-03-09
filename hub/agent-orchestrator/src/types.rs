@@ -9,8 +9,10 @@ pub type TaskId = Uuid;
 /// What kind of LLM backend to use
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LlmBackend {
-    /// Claude API (cloud)
+    /// Claude API with API key
     Claude { api_key: String, model: String },
+    /// Claude API with OAuth token (from Claude Code login)
+    ClaudeOAuth { access_token: String, model: String },
     /// Local llama.cpp instance
     LocalLlama { endpoint: String, model: String },
     /// Any OpenAI-compatible API

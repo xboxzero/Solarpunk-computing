@@ -70,6 +70,9 @@ impl LlmClient {
             LlmBackend::Claude { api_key, model } => {
                 self.chat_claude(api_key, model, messages, system_prompt).await
             }
+            LlmBackend::ClaudeOAuth { access_token, model } => {
+                self.chat_claude_oauth(access_token, model, messages, system_prompt).await
+            }
             LlmBackend::LocalLlama { endpoint, model } => {
                 self.chat_openai_compat(endpoint, "", model, messages, system_prompt).await
             }
@@ -126,6 +129,64 @@ impl LlmClient {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             error!("Claude API error {status}: {body}");
+            return Err(format!("Claude API error {status}: {body}"));
+        }
+
+        let body: ClaudeResponse = response
+            .json()
+            .await
+            .map_err(|e| format!("Parse error: {e}"))?;
+
+        Ok(body.content.into_iter().map(|c| c.text).collect::<Vec<_>>().join(""))
+    }
+
+    async fn chat_claude_oauth(
+        &self,
+        access_token: &str,
+        model: &str,
+        messages: &[Message],
+        system_prompt: Option<&str>,
+    ) -> Result<String, String> {
+        let claude_messages: Vec<ClaudeMessage> = messages
+            .iter()
+            .filter_map(|m| {
+                let role = match &m.role {
+                    MessageRole::User => "user",
+                    MessageRole::Assistant => "assistant",
+                    MessageRole::System => return None,
+                    MessageRole::Tool { .. } => "user",
+                };
+                Some(ClaudeMessage {
+                    role: role.to_string(),
+                    content: m.content.clone(),
+                })
+            })
+            .collect();
+
+        let request = ClaudeRequest {
+            model: model.to_string(),
+            max_tokens: 4096,
+            messages: claude_messages,
+            system: system_prompt.map(String::from),
+        };
+
+        debug!("Sending request to Claude API via OAuth");
+
+        let response = self
+            .http
+            .post("https://api.anthropic.com/v1/messages")
+            .header("authorization", format!("Bearer {access_token}"))
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| format!("HTTP error: {e}"))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            error!("Claude OAuth API error {status}: {body}");
             return Err(format!("Claude API error {status}: {body}"));
         }
 
