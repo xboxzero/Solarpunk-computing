@@ -5,20 +5,129 @@ Solarpunk Web Terminal Gateway
 Serves a mobile-friendly terminal UI over HTTP/WebSocket.
 Any device on the network can open a browser to get a shell on the Pi.
 Bridges browser WebSocket <-> local PTY shell.
+
+Designed to handle heavy processes like Claude Code:
+- Each session runs in its own process group for clean kill
+- Large read buffers for fast CLI output
+- Proper SIGKILL cleanup of entire process tree on disconnect
+- Session tracking and watchdog for zombie prevention
+- Ping/pong keepalive to detect dead connections
 """
 
 import asyncio
+import json
 import os
 import pty
 import signal
 import fcntl
 import struct
 import termios
+import time
 
 from aiohttp import web
 
 HOST = "0.0.0.0"
 PORT = 8822
+MAX_SESSIONS = 4
+READ_BUFFER = 16384     # 16KB reads for fast output (Claude is chatty)
+PING_INTERVAL = 15      # WebSocket keepalive seconds
+SESSION_TIMEOUT = 3600  # Kill sessions older than 1 hour with no WS
+
+
+class Session:
+    """Tracks a PTY shell session."""
+    def __init__(self, pid, master_fd, ws):
+        self.pid = pid
+        self.master_fd = master_fd
+        self.ws = ws
+        self.created = time.time()
+        self.last_activity = time.time()
+        self.alive = True
+
+    def touch(self):
+        self.last_activity = time.time()
+
+
+sessions = {}  # id -> Session
+
+
+def kill_session(session):
+    """Kill the entire process group - ensures Claude + MCP servers all die."""
+    if not session.alive:
+        return
+    session.alive = False
+    pid = session.pid
+
+    # Kill entire process group (bash + claude + all children)
+    try:
+        pgid = os.getpgid(pid)
+        os.killpg(pgid, signal.SIGTERM)
+    except (OSError, ProcessLookupError):
+        pass
+
+    # Give 2s for graceful shutdown, then force kill
+    async def force_kill():
+        await asyncio.sleep(2)
+        try:
+            pgid = os.getpgid(pid)
+            os.killpg(pgid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except (OSError, ChildProcessError):
+            pass
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(force_kill())
+    except RuntimeError:
+        # No loop running, force kill synchronously
+        try:
+            pgid = os.getpgid(pid)
+            os.killpg(pgid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
+
+    try:
+        os.waitpid(pid, os.WNOHANG)
+    except (OSError, ChildProcessError):
+        pass
+
+    try:
+        os.close(session.master_fd)
+    except OSError:
+        pass
+
+
+async def reap_zombies():
+    """Periodically clean up dead sessions and zombie processes."""
+    while True:
+        await asyncio.sleep(30)
+        now = time.time()
+        dead = []
+        for sid, session in sessions.items():
+            # Check if process is still alive
+            try:
+                os.kill(session.pid, 0)
+            except OSError:
+                dead.append(sid)
+                continue
+            # Check for stale sessions
+            if now - session.last_activity > SESSION_TIMEOUT:
+                kill_session(session)
+                dead.append(sid)
+        for sid in dead:
+            sessions.pop(sid, None)
+        # Also reap any zombie children
+        try:
+            while True:
+                pid, _ = os.waitpid(-1, os.WNOHANG)
+                if pid == 0:
+                    break
+        except ChildProcessError:
+            pass
+
 
 HTML = """<!DOCTYPE html>
 <html>
@@ -51,6 +160,7 @@ body {
 }
 #top-bar .status { font-size: 12px; color: #888; }
 #top-bar .status.ok { color: #0f0; }
+#top-bar .status.warn { color: #ff0; }
 #terminal { flex: 1; }
 </style>
 </head>
@@ -75,7 +185,7 @@ const term = new Terminal({
     cursor: '#0f0',
     selectionBackground: '#333',
   },
-  scrollback: 2000,
+  scrollback: 5000,
   convertEol: false,
   allowProposedApi: true,
 });
@@ -89,8 +199,10 @@ fitAddon.fit();
 const statusEl = document.getElementById('status');
 let ws;
 let reconnectTimer;
+let pingTimer;
 
 function connect() {
+  if (reconnectTimer) clearTimeout(reconnectTimer);
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(proto + '//' + location.host + '/ws');
   ws.binaryType = 'arraybuffer';
@@ -98,22 +210,40 @@ function connect() {
   ws.onopen = () => {
     statusEl.textContent = 'connected';
     statusEl.className = 'status ok';
-    // Send initial size
     const dims = JSON.stringify({type:'resize', cols:term.cols, rows:term.rows});
     ws.send(dims);
+    // Keepalive ping
+    if (pingTimer) clearInterval(pingTimer);
+    pingTimer = setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({type:'ping'}));
+      }
+    }, 15000);
   };
 
   ws.onmessage = (e) => {
     if (e.data instanceof ArrayBuffer) {
       term.write(new Uint8Array(e.data));
     } else {
+      // Check for server messages
+      if (e.data.startsWith('{')) {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === 'pong') return;
+          if (msg.type === 'error') {
+            term.write('\\r\\n[server: ' + msg.message + ']\\r\\n');
+            return;
+          }
+        } catch(ex) {}
+      }
       term.write(e.data);
     }
   };
 
   ws.onclose = () => {
     statusEl.textContent = 'disconnected - reconnecting...';
-    statusEl.className = 'status';
+    statusEl.className = 'status warn';
+    if (pingTimer) clearInterval(pingTimer);
     reconnectTimer = setTimeout(connect, 2000);
   };
 
@@ -126,23 +256,21 @@ term.onData((data) => {
   }
 });
 
-window.addEventListener('resize', () => {
+function sendResize() {
   fitAddon.fit();
   if (ws && ws.readyState === WebSocket.OPEN) {
-    const dims = JSON.stringify({type:'resize', cols:term.cols, rows:term.rows});
-    ws.send(dims);
+    ws.send(JSON.stringify({type:'resize', cols:term.cols, rows:term.rows}));
   }
-});
+}
 
-// Handle mobile orientation change
-screen.orientation && screen.orientation.addEventListener('change', () => {
-  setTimeout(() => {
-    fitAddon.fit();
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      const dims = JSON.stringify({type:'resize', cols:term.cols, rows:term.rows});
-      ws.send(dims);
-    }
-  }, 200);
+window.addEventListener('resize', sendResize);
+screen.orientation && screen.orientation.addEventListener('change', () => setTimeout(sendResize, 200));
+
+// Notify server before leaving so it can clean up
+window.addEventListener('beforeunload', () => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.close(1000, 'page_unload');
+  }
 });
 
 connect();
@@ -155,13 +283,52 @@ async def index(request):
     return web.Response(text=HTML, content_type="text/html")
 
 
+async def health(request):
+    """Health check + session list."""
+    info = {
+        "sessions": len(sessions),
+        "max_sessions": MAX_SESSIONS,
+        "uptime": int(time.time()),
+    }
+    for sid, s in sessions.items():
+        info[f"session_{sid}"] = {
+            "pid": s.pid,
+            "alive": s.alive,
+            "age": int(time.time() - s.created),
+            "idle": int(time.time() - s.last_activity),
+        }
+    return web.json_response(info)
+
+
+async def kill_all_sessions(request):
+    """Emergency kill all sessions."""
+    count = 0
+    for sid, session in list(sessions.items()):
+        kill_session(session)
+        count += 1
+    sessions.clear()
+    return web.json_response({"killed": count})
+
+
 async def websocket_handler(request):
-    ws = web.WebSocketResponse()
+    ws = web.WebSocketResponse(
+        heartbeat=PING_INTERVAL,
+        max_msg_size=64 * 1024,
+    )
     await ws.prepare(request)
 
-    # Fork a PTY in the Solarpunk project directory
+    # Check session limit
+    active = sum(1 for s in sessions.values() if s.alive)
+    if active >= MAX_SESSIONS:
+        await ws.send_json({"type": "error", "message": f"max sessions ({MAX_SESSIONS}) reached"})
+        await ws.close()
+        return ws
+
+    # Fork a PTY with its own process group
     pid, master_fd = pty.fork()
     if pid == 0:
+        # Child: create new process group so we can kill the whole tree
+        os.setsid()
         os.environ["TERM"] = "xterm-256color"
         os.environ["COLUMNS"] = "80"
         os.environ["LINES"] = "24"
@@ -169,6 +336,11 @@ async def websocket_handler(request):
         if os.path.isdir(project_dir):
             os.chdir(project_dir)
         os.execvp("/bin/bash", ["/bin/bash", "--login"])
+
+    # Parent: track session
+    session = Session(pid, master_fd, ws)
+    sid = id(session)
+    sessions[sid] = session
 
     # Make master_fd non-blocking
     flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
@@ -179,17 +351,16 @@ async def websocket_handler(request):
 
     def on_pty_readable():
         try:
-            data = os.read(master_fd, 4096)
+            data = os.read(master_fd, READ_BUFFER)
             if data:
                 asyncio.ensure_future(ws.send_bytes(data))
+                session.touch()
             else:
                 done.set()
         except OSError:
             done.set()
 
     loop.add_reader(master_fd, on_pty_readable)
-
-    import json
 
     try:
         async for msg in ws:
@@ -202,25 +373,31 @@ async def websocket_handler(request):
                         d = json.loads(text)
                         if d.get("type") == "resize":
                             set_pty_size(master_fd, d["rows"], d["cols"])
+                            session.touch()
+                            continue
+                        if d.get("type") == "ping":
+                            await ws.send_json({"type": "pong"})
+                            session.touch()
                             continue
                     except (json.JSONDecodeError, KeyError, ValueError):
                         pass
-                os.write(master_fd, text.encode())
+                try:
+                    os.write(master_fd, text.encode())
+                    session.touch()
+                except OSError:
+                    break
             elif msg.type == web.WSMsgType.BINARY:
-                os.write(master_fd, msg.data)
+                try:
+                    os.write(master_fd, msg.data)
+                    session.touch()
+                except OSError:
+                    break
             elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
                 break
     finally:
         loop.remove_reader(master_fd)
-        try:
-            os.kill(pid, signal.SIGTERM)
-            os.waitpid(pid, 0)
-        except (OSError, ChildProcessError):
-            pass
-        try:
-            os.close(master_fd)
-        except OSError:
-            pass
+        kill_session(session)
+        sessions.pop(sid, None)
 
     return ws
 
@@ -235,9 +412,26 @@ def main():
     app = web.Application()
     app.router.add_get("/", index)
     app.router.add_get("/ws", websocket_handler)
+    app.router.add_get("/health", health)
+    app.router.add_post("/kill", kill_all_sessions)
+
+    # Start zombie reaper
+    async def start_background(app):
+        app["reaper"] = asyncio.create_task(reap_zombies())
+
+    async def stop_background(app):
+        app["reaper"].cancel()
+        # Kill all sessions on shutdown
+        for sid, session in list(sessions.items()):
+            kill_session(session)
+        sessions.clear()
+
+    app.on_startup.append(start_background)
+    app.on_cleanup.append(stop_background)
 
     print(f"Solarpunk Web Terminal on http://0.0.0.0:{PORT}")
     print(f"Open http://172.20.10.6:{PORT} from your iPhone")
+    print(f"Max {MAX_SESSIONS} concurrent sessions, {READ_BUFFER}B buffer")
     web.run_app(app, host=HOST, port=PORT, print=None)
 
 
