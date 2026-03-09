@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Solarpunk Terminal</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  background: #0a0a0a;
+  overflow: hidden;
+  height: 100vh;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+#top-bar {
+  background: #1a1a2e;
+  color: #0f0;
+  padding: 6px 12px;
+  font: bold 14px monospace;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-shrink: 0;
+}
+#top-bar .status { font-size: 12px; color: #888; }
+#top-bar .status.ok { color: #0f0; }
+#top-bar .status.warn { color: #ff0; }
+#terminal { flex: 1; }
+</style>
+</head>
+<body>
+<div id="top-bar">
+  <span>solarpunk@xeropi2 ~/Solarpunk-computing</span>
+  <span id="status" class="status">connecting...</span>
+</div>
+<div id="terminal"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.min.js"></script>
+<script>
+const term = new Terminal({
+  cursorBlink: true,
+  fontSize: 15,
+  fontFamily: 'Menlo, Monaco, Consolas, monospace',
+  theme: {
+    background: '#0a0a0a',
+    foreground: '#e0e0e0',
+    cursor: '#0f0',
+    selectionBackground: '#333',
+  },
+  scrollback: 5000,
+  convertEol: false,
+  allowProposedApi: true,
+});
+
+const fitAddon = new FitAddon.FitAddon();
+term.loadAddon(fitAddon);
+term.loadAddon(new WebLinksAddon.WebLinksAddon());
+term.open(document.getElementById('terminal'));
+fitAddon.fit();
+
+const statusEl = document.getElementById('status');
+let ws;
+let reconnectTimer;
+let pingTimer;
+
+function connect() {
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host + '/ws');
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    statusEl.textContent = 'connected';
+    statusEl.className = 'status ok';
+    const dims = JSON.stringify({type:'resize', cols:term.cols, rows:term.rows});
+    ws.send(dims);
+    if (pingTimer) clearInterval(pingTimer);
+    pingTimer = setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({type:'ping'}));
+      }
+    }, 15000);
+  };
+
+  ws.onmessage = (e) => {
+    if (e.data instanceof ArrayBuffer) {
+      term.write(new Uint8Array(e.data));
+    } else {
+      if (e.data.startsWith('{')) {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === 'pong') return;
+          if (msg.type === 'error') {
+            term.write('\r\n[server: ' + msg.message + ']\r\n');
+            return;
+          }
+        } catch(ex) {}
+      }
+      term.write(e.data);
+    }
+  };
+
+  ws.onclose = () => {
+    statusEl.textContent = 'disconnected - reconnecting...';
+    statusEl.className = 'status warn';
+    if (pingTimer) clearInterval(pingTimer);
+    reconnectTimer = setTimeout(connect, 2000);
+  };
+
+  ws.onerror = () => ws.close();
+}
+
+term.onData((data) => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(data);
+  }
+});
+
+function sendResize() {
+  fitAddon.fit();
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({type:'resize', cols:term.cols, rows:term.rows}));
+  }
+}
+
+window.addEventListener('resize', sendResize);
+screen.orientation && screen.orientation.addEventListener('change', () => setTimeout(sendResize, 200));
+
+window.addEventListener('beforeunload', () => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.close(1000, 'page_unload');
+  }
+});
+
+connect();
+</script>
+</body>
+</html>

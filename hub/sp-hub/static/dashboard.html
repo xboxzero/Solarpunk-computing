@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Solarpunk Mesh Bridge</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  background: #0a0a0a; color: #e0e0e0;
+  font-family: 'Menlo', 'Monaco', 'Consolas', monospace;
+  font-size: 14px; padding: 12px;
+}
+h1 { color: #0f0; font-size: 18px; margin-bottom: 8px; }
+h2 { color: #0af; font-size: 15px; margin: 16px 0 8px; }
+.meta { color: #666; font-size: 12px; margin-bottom: 16px; }
+.status { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.status.on { background: #0f0; }
+.status.off { background: #f00; }
+.node {
+  background: #111; border: 1px solid #222; border-radius: 6px;
+  padding: 12px; margin-bottom: 10px;
+}
+.node-name { color: #0f0; font-weight: bold; font-size: 15px; }
+.node-ip { color: #666; font-size: 12px; }
+.stat { display: inline-block; margin-right: 16px; margin-top: 4px; }
+.stat label { color: #888; }
+.stat value { color: #fff; }
+.peer {
+  background: #0a0a0a; border: 1px solid #1a1a1a; border-radius: 4px;
+  padding: 8px; margin: 4px 0; font-size: 13px;
+}
+.peer-name { color: #ff0; }
+.cmd-box {
+  display: flex; gap: 8px; margin-top: 8px;
+}
+.cmd-box input {
+  flex: 1; background: #111; border: 1px solid #333; color: #fff;
+  padding: 6px 10px; border-radius: 4px; font-family: inherit; font-size: 13px;
+}
+.cmd-box button {
+  background: #1a3a1a; color: #0f0; border: 1px solid #0f0;
+  padding: 6px 14px; border-radius: 4px; cursor: pointer; font-family: inherit;
+}
+.cmd-box button:active { background: #0f0; color: #000; }
+#result {
+  background: #111; border: 1px solid #222; border-radius: 4px;
+  padding: 8px; margin-top: 8px; white-space: pre-wrap;
+  font-size: 13px; max-height: 200px; overflow-y: auto; display: none;
+}
+.topo {
+  background: #111; border: 1px solid #222; border-radius: 6px;
+  padding: 16px; margin-top: 12px; min-height: 80px;
+}
+.topo-node { display: inline-block; text-align: center; margin: 8px 12px; }
+.topo-icon { font-size: 28px; }
+.topo-label { font-size: 11px; color: #888; margin-top: 2px; }
+.topo-line { color: #333; }
+#ws-status { font-size: 11px; }
+</style>
+</head>
+<body>
+
+<h1>// solarpunk mesh bridge</h1>
+<div class="meta">
+  Pi gateway | ESP-NOW mesh | <span style="color:#0af">Rust</span> |
+  <span id="ws-status" style="color:#f00">connecting...</span>
+</div>
+
+<h2>-- topology --</h2>
+<div class="topo" id="topo">scanning...</div>
+
+<h2>-- esp32 nodes --</h2>
+<div id="nodes">scanning subnet...</div>
+
+<h2>-- mesh peers --</h2>
+<div id="peers">waiting for data...</div>
+
+<h2>-- command --</h2>
+<div class="cmd-box">
+  <select id="cmd-node" style="background:#111;color:#fff;border:1px solid #333;padding:6px;border-radius:4px;font-family:inherit;">
+    <option value="">select node</option>
+  </select>
+  <input id="cmd-input" placeholder="status / peers / help" />
+  <button onclick="sendCmd()">run</button>
+</div>
+<div id="result"></div>
+
+<script>
+let state = {};
+const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+let ws;
+
+function connect() {
+  ws = new WebSocket(proto + '//' + location.host + '/ws');
+  const statusEl = document.getElementById('ws-status');
+
+  ws.onopen = () => { statusEl.style.color = '#0f0'; statusEl.textContent = 'live'; };
+  ws.onclose = () => { statusEl.style.color = '#f00'; statusEl.textContent = 'reconnecting...'; setTimeout(connect, 2000); };
+  ws.onerror = () => ws.close();
+
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'state') {
+      state = msg;
+      render();
+    } else if (msg.type === 'result') {
+      const el = document.getElementById('result');
+      el.style.display = 'block';
+      el.textContent = msg.node + '> ' + msg.result;
+    } else if (msg.type === 'error') {
+      const el = document.getElementById('result');
+      el.style.display = 'block';
+      el.textContent = 'ERROR: ' + msg.error;
+    }
+  };
+}
+
+function render() {
+  const nodesEl = document.getElementById('nodes');
+  const nodes = state.nodes || {};
+  const ips = Object.keys(nodes);
+  if (ips.length === 0) {
+    nodesEl.innerHTML = '<div style="color:#666">no nodes found yet...</div>';
+  } else {
+    nodesEl.innerHTML = ips.map(ip => {
+      const n = nodes[ip];
+      return `<div class="node">
+        <span class="status ${n.online ? 'on' : 'off'}"></span>
+        <span class="node-name">${n.name}</span>
+        <span class="node-ip">${ip}</span>
+        <br>
+        <span class="stat"><label>bat </label><value>${n.battery}%</value></span>
+        <span class="stat"><label>solar </label><value>${n.solar_mv}mV</value></span>
+        <span class="stat"><label>peers </label><value>${n.peer_count}</value></span>
+        <span class="stat"><label>up </label><value>${formatUptime(n.uptime)}</value></span>
+        <span class="stat"><label>fw </label><value>${n.version}</value></span>
+        <span class="stat"><label>enc </label><value>${n.encrypted ? 'AES-256' : 'off'}</value></span>
+      </div>`;
+    }).join('');
+  }
+
+  const sel = document.getElementById('cmd-node');
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">select node</option>' +
+    ips.filter(ip => nodes[ip].online).map(ip =>
+      `<option value="${ip}">${nodes[ip].name} (${ip})</option>`
+    ).join('');
+  sel.value = prev;
+
+  const peersEl = document.getElementById('peers');
+  const peers = state.peers || {};
+  const pnames = Object.keys(peers);
+  if (pnames.length === 0) {
+    peersEl.innerHTML = '<div style="color:#666">no mesh peers discovered</div>';
+  } else {
+    peersEl.innerHTML = pnames.map(name => {
+      const p = peers[name];
+      return `<div class="peer">
+        <span class="peer-name">${name}</span>
+        <span class="stat"><label>bat </label><value>${p.battery || '?'}%</value></span>
+        <span class="stat"><label>rssi </label><value>${p.rssi || '?'}</value></span>
+        <span class="stat"><label>hops </label><value>${p.hops || '?'}</value></span>
+        <span class="stat"><label>via </label><value>${p.seen_by || '?'}</value></span>
+      </div>`;
+    }).join('');
+  }
+
+  renderTopo(nodes, peers);
+}
+
+function renderTopo(nodes, peers) {
+  const el = document.getElementById('topo');
+  const ips = Object.keys(nodes);
+  if (ips.length === 0) {
+    el.innerHTML = '<span style="color:#666">waiting for nodes...</span>';
+    return;
+  }
+
+  let html = '<div class="topo-node"><div class="topo-icon">[Pi]</div><div class="topo-label">bridge</div></div>';
+  ips.forEach(ip => {
+    const n = nodes[ip];
+    html += ' <span class="topo-line">---</span> ';
+    html += `<div class="topo-node"><div class="topo-icon">[${n.online ? '*' : 'x'}]</div><div class="topo-label">${n.name}</div></div>`;
+  });
+
+  const peerNames = Object.keys(peers);
+  const nodeNames = ips.map(ip => nodes[ip].name);
+  peerNames.forEach(name => {
+    if (!nodeNames.includes(name)) {
+      const p = peers[name];
+      html += ' <span class="topo-line">~~~</span> ';
+      html += `<div class="topo-node"><div class="topo-icon">[${p.hops || '?'}h]</div><div class="topo-label">${name}</div></div>`;
+    }
+  });
+
+  el.innerHTML = html;
+}
+
+function formatUptime(s) {
+  if (!s) return '?';
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.floor(s/60) + 'm';
+  return Math.floor(s/3600) + 'h' + Math.floor((s%3600)/60) + 'm';
+}
+
+function sendCmd() {
+  const nodeIp = document.getElementById('cmd-node').value;
+  const cmd = document.getElementById('cmd-input').value;
+  if (!nodeIp || !cmd) return;
+  ws.send(JSON.stringify({type: 'cmd', node: nodeIp, cmd: cmd}));
+  document.getElementById('cmd-input').value = '';
+}
+
+document.getElementById('cmd-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') sendCmd();
+});
+
+connect();
+</script>
+</body>
+</html>
