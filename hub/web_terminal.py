@@ -52,42 +52,25 @@ sessions = {}  # id -> Session
 
 
 def kill_session(session):
-    """Kill the entire process group - ensures Claude + MCP servers all die."""
+    """Kill the entire process tree - ensures Claude + MCP servers all die."""
     if not session.alive:
         return
     session.alive = False
     pid = session.pid
 
-    # Kill entire process group (bash + claude + all children)
-    try:
-        pgid = os.getpgid(pid)
-        os.killpg(pgid, signal.SIGTERM)
-    except (OSError, ProcessLookupError):
-        pass
-
-    # Give 2s for graceful shutdown, then force kill
-    async def force_kill():
-        await asyncio.sleep(2)
+    # Try killing the process group first, then the pid directly
+    for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
-            pgid = os.getpgid(pid)
-            os.killpg(pgid, signal.SIGKILL)
+            os.killpg(os.getpgid(pid), sig)
         except (OSError, ProcessLookupError):
-            pass
-        try:
-            os.waitpid(pid, os.WNOHANG)
-        except (OSError, ChildProcessError):
-            pass
-
-    try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(force_kill())
-    except RuntimeError:
-        # No loop running, force kill synchronously
-        try:
-            pgid = os.getpgid(pid)
-            os.killpg(pgid, signal.SIGKILL)
-        except (OSError, ProcessLookupError):
-            pass
+            try:
+                os.kill(pid, sig)
+            except (OSError, ProcessLookupError):
+                pass
+        if sig == signal.SIGTERM:
+            # Brief pause between TERM and KILL
+            import time
+            time.sleep(0.5)
 
     try:
         os.waitpid(pid, os.WNOHANG)
@@ -327,8 +310,12 @@ async def websocket_handler(request):
     # Fork a PTY with its own process group
     pid, master_fd = pty.fork()
     if pid == 0:
-        # Child: create new process group so we can kill the whole tree
-        os.setsid()
+        # Child: pty.fork() already calls setsid(), so we have our own session.
+        # Just set a new process group for killpg() cleanup.
+        try:
+            os.setpgrp()
+        except OSError:
+            pass  # Already group leader from setsid
         os.environ["TERM"] = "xterm-256color"
         os.environ["COLUMNS"] = "80"
         os.environ["LINES"] = "24"
