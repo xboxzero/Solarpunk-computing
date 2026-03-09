@@ -1,4 +1,4 @@
-# Solarpunk Wearable Computer
+# Solarpunk Computing
 
 An open-source, solar-powered wearable computer built on ESP32-S3. Program it from Safari on your iPhone. Devices automatically discover each other and form encrypted off-grid mesh networks. Optionally connects to a Raspberry Pi 5 hub for local LLM AI agent capabilities.
 
