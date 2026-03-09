@@ -1,16 +1,46 @@
+use crate::mcp::McpManager;
 use crate::types::{Tool, ToolResult};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
 /// Execute a tool and return the result
-pub async fn execute_tool(tool: &Tool) -> ToolResult {
+/// If mcp_mgr is provided, MCP calls will use stdio transport when available
+pub async fn execute_tool(
+    tool: &Tool,
+    mcp_mgr: Option<&Arc<Mutex<McpManager>>>,
+) -> ToolResult {
     match tool {
         Tool::WebSearch { query } => web_search(query).await,
         Tool::WebFetch { url } => web_fetch(url).await,
         Tool::ShellExec { command } => shell_exec(command).await,
         Tool::FileRead { path } => file_read(path).await,
         Tool::FileWrite { path, content } => file_write(path, content).await,
-        Tool::McpCall { server, tool: tool_name, args } => {
-            mcp_call(server, tool_name, args).await
+        Tool::McpCall {
+            server,
+            tool: tool_name,
+            args,
+        } => {
+            // Try stdio MCP manager first
+            if let Some(mgr) = mcp_mgr {
+                let mut mgr = mgr.lock().await;
+                if mgr.has_server(server) {
+                    return match mgr.call_tool(server, tool_name, args).await {
+                        Ok(output) => ToolResult {
+                            tool: format!("mcp:{tool_name}"),
+                            success: true,
+                            output,
+                        },
+                        Err(e) => ToolResult {
+                            tool: format!("mcp:{tool_name}"),
+                            success: false,
+                            output: e,
+                        },
+                    };
+                }
+            }
+            // Fall back to HTTP
+            mcp_call_http(server, tool_name, args).await
         }
         Tool::AgentMessage { target, message } => {
             // Handled by orchestrator, not here
@@ -20,7 +50,7 @@ pub async fn execute_tool(tool: &Tool) -> ToolResult {
                 output: format!("Message queued for agent {target}: {message}"),
             }
         }
-        Tool::CreateSubTask { title, description } => {
+        Tool::CreateSubTask { title, description: _ } => {
             // Handled by orchestrator
             ToolResult {
                 tool: "create_subtask".into(),
@@ -69,9 +99,10 @@ async fn web_search(query: &str) -> ToolResult {
 fn extract_search_results(html: &str) -> Vec<String> {
     let mut results = Vec::new();
     // Simple extraction: find result snippets between known markers
-    // This is basic but functional without an HTML parser dependency
     for (i, chunk) in html.split("result__snippet").enumerate().skip(1) {
-        if i > 5 { break; } // Top 5 results
+        if i > 5 {
+            break;
+        } // Top 5 results
         if let Some(start) = chunk.find('>') {
             let text = &chunk[start + 1..];
             if let Some(end) = text.find('<') {
@@ -106,7 +137,11 @@ async fn web_fetch(url: &str) -> ToolResult {
             let body = resp.text().await.unwrap_or_default();
             // Truncate large responses
             let output = if body.len() > 10_000 {
-                format!("{}\n... (truncated, {} bytes total)", &body[..10_000], body.len())
+                format!(
+                    "{}\n... (truncated, {} bytes total)",
+                    &body[..10_000],
+                    body.len()
+                )
             } else {
                 body
             };
@@ -198,8 +233,8 @@ async fn file_write(path: &str, content: &str) -> ToolResult {
     }
 }
 
-async fn mcp_call(server: &str, tool_name: &str, args: &serde_json::Value) -> ToolResult {
-    debug!("MCP call: {server}/{tool_name}");
+async fn mcp_call_http(server: &str, tool_name: &str, args: &serde_json::Value) -> ToolResult {
+    debug!("MCP HTTP call: {server}/{tool_name}");
 
     // MCP over HTTP/SSE - send JSON-RPC request
     let client = reqwest::Client::new();

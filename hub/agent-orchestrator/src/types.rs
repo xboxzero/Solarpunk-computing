@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use uuid::Uuid;
 
 /// Unique identifier for agents and tasks
@@ -122,6 +121,38 @@ pub struct ToolResult {
     pub tool: String,
     pub success: bool,
     pub output: String,
+}
+
+/// WebSocket event for live updates
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum WsEvent {
+    AgentSpawned {
+        agent_id: String,
+        name: String,
+        role: String,
+    },
+    AgentRemoved {
+        agent_id: String,
+    },
+    ChatMessage {
+        agent_id: String,
+        role: String,
+        content: String,
+    },
+    TaskCreated {
+        task_id: String,
+        title: String,
+    },
+    TaskUpdated {
+        task_id: String,
+        title: String,
+        status: String,
+    },
+    McpServerConnected {
+        name: String,
+        tool_count: usize,
+    },
 }
 
 /// Configuration for the orchestrator

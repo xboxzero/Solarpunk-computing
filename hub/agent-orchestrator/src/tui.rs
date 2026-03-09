@@ -1,6 +1,5 @@
 use crate::orchestrator::Orchestrator;
 use crate::types::*;
-use chrono::Utc;
 use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -9,8 +8,8 @@ use crossterm::{
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
-    text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
+    text::{Line, Span},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Frame, Terminal,
 };
 use std::io::stdout;
@@ -57,7 +56,7 @@ impl App {
             cursor_pos: 0,
             chat_history: vec![ChatLine {
                 role: "system".into(),
-                content: "Welcome to Solarpunk Agent. Type a message or use commands:\n  /spawn <name> [role]  - Create agent (roles: coder, researcher, sysadmin, mesh, general)\n  /list                 - List agents\n  /task <description>   - Run a task\n  /clear                - Clear chat\n  Tab                   - Switch focus | Ctrl+C - Quit".into(),
+                content: "Welcome to Solarpunk Agent. Type a message or use commands:\n  /spawn <name> [role]  - Create agent (roles: coder, researcher, sysadmin, mesh, general)\n  /list                 - List agents\n  /task <description>   - Run a task\n  /mcp <cmd> <args>     - Connect MCP server (e.g. /mcp connect myserver npx server-name)\n  /tasks                - List all tasks\n  /clear                - Clear chat\n  Tab                   - Switch focus | Ctrl+C - Quit".into(),
                 color: Color::DarkGray,
             }],
             agent_list_state: ListState::default(),
@@ -352,6 +351,98 @@ async fn handle_command(app: &mut App, input: &str) {
                 }
             }
         }
+        "/mcp" => {
+            let subcmd = parts.get(1).unwrap_or(&"help");
+            match *subcmd {
+                "connect" => {
+                    // /mcp connect <name> <command> [args...]
+                    let rest = input.strip_prefix("/mcp connect ").unwrap_or("");
+                    let mcp_parts: Vec<&str> = rest.splitn(2, ' ').collect();
+                    if mcp_parts.len() < 2 {
+                        app.push_chat("system", "Usage: /mcp connect <name> <command> [args...]", Color::Yellow);
+                        return;
+                    }
+                    let name = mcp_parts[0];
+                    let cmd_parts: Vec<&str> = mcp_parts[1].split_whitespace().collect();
+                    let command = cmd_parts[0];
+                    let args: Vec<String> = cmd_parts[1..].iter().map(|s| s.to_string()).collect();
+
+                    app.push_chat("system", &format!("Connecting MCP server '{name}': {command} {}...", args.join(" ")), Color::Yellow);
+                    app.status_msg = format!("Connecting MCP '{name}'...");
+
+                    let result = {
+                        let o = app.orch.lock().await;
+                        o.connect_mcp_stdio(name, command, &args).await
+                    };
+                    match result {
+                        Ok(count) => {
+                            app.push_chat("system", &format!("MCP '{name}' connected with {count} tools"), Color::Green);
+                            app.status_msg = format!("MCP '{name}' ready");
+                        }
+                        Err(e) => {
+                            app.push_chat("error", &format!("MCP connect failed: {e}"), Color::Red);
+                            app.status_msg = "MCP connect failed".into();
+                        }
+                    }
+                }
+                "list" => {
+                    let msg = {
+                        let o = app.orch.lock().await;
+                        let mgr = o.mcp_manager();
+                        let mgr = mgr.lock().await;
+                        let servers = mgr.list_servers();
+                        if servers.is_empty() {
+                            "No MCP servers connected.".to_string()
+                        } else {
+                            let mut msg = String::from("MCP Servers:\n");
+                            for (name, tool_count) in &servers {
+                                msg.push_str(&format!("  {name} ({tool_count} tools)\n"));
+                            }
+                            msg
+                        }
+                    };
+                    app.push_chat("system", &msg, Color::Yellow);
+                }
+                "tools" => {
+                    let msg = {
+                        let o = app.orch.lock().await;
+                        let mgr = o.mcp_manager();
+                        let mgr = mgr.lock().await;
+                        let tools = mgr.all_tools();
+                        if tools.is_empty() {
+                            "No MCP tools available.".to_string()
+                        } else {
+                            let mut msg = String::from("MCP Tools:\n");
+                            for t in &tools {
+                                msg.push_str(&format!("  [{}] {} - {}\n", t.server_name, t.name, t.description));
+                            }
+                            msg
+                        }
+                    };
+                    app.push_chat("system", &msg, Color::Yellow);
+                }
+                _ => {
+                    app.push_chat("system", "MCP commands:\n  /mcp connect <name> <command> [args...]\n  /mcp list\n  /mcp tools", Color::Yellow);
+                }
+            }
+        }
+        "/tasks" => {
+            let msg = {
+                let o = app.orch.lock().await;
+                let tasks = o.list_tasks();
+                if tasks.is_empty() {
+                    "No tasks.".to_string()
+                } else {
+                    let mut msg = String::from("Tasks:\n");
+                    for t in &tasks {
+                        let assigned = t.assigned_to.map(|id| id.to_string()[..8].to_string()).unwrap_or_else(|| "unassigned".into());
+                        msg.push_str(&format!("  {} | {:?} | {} | {}\n", &t.id.to_string()[..8], t.status, assigned, t.title));
+                    }
+                    msg
+                }
+            };
+            app.push_chat("system", &msg, Color::Yellow);
+        }
         "/clear" => {
             app.chat_history.clear();
             app.push_chat("system", "Chat cleared.", Color::DarkGray);
@@ -397,7 +488,7 @@ fn draw_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(5),
-            Constraint::Length(7),
+            Constraint::Length(8),
         ])
         .split(area);
 
@@ -412,7 +503,7 @@ fn draw_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
         .agent_ids
         .iter()
         .enumerate()
-        .map(|(i, id)| {
+        .map(|(_i, id)| {
             let is_selected = Some(*id) == app.selected_agent;
             let marker = if is_selected { "▶ " } else { "  " };
             let short_id = &id.to_string()[..8];
@@ -440,6 +531,7 @@ fn draw_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
         Line::from("Enter  Send/Select".dark_gray()),
         Line::from("↑↓     Scroll/Select".dark_gray()),
         Line::from("/spawn Create agent".dark_gray()),
+        Line::from("/mcp   MCP servers".dark_gray()),
         Line::from("Ctrl+C Quit".dark_gray()),
     ];
 

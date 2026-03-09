@@ -1,6 +1,8 @@
 mod agent;
 mod llm;
+mod mcp;
 mod orchestrator;
+mod persistence;
 mod tools;
 mod tui;
 mod types;

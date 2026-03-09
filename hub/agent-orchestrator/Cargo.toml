@@ -1,6 +1,6 @@
 [package]
 name = "solarpunk-agent"
-version = "0.2.0"
+version = "0.4.0"
 edition = "2024"
 description = "Solarpunk AI Agent Orchestrator - multi-agent TUI dashboard"
 
@@ -38,6 +38,6 @@ dotenvy = "0.15"
 ratatui = "0.29"
 crossterm = "0.28"
 
-# Web UI
-axum = "0.8"
+# Web UI + WebSocket
+axum = { version = "0.8", features = ["ws"] }
 tokio-stream = "0.1"

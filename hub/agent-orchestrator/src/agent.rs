@@ -1,8 +1,11 @@
 use crate::llm::LlmClient;
+use crate::mcp::McpManager;
 use crate::tools;
 use crate::types::*;
 use chrono::Utc;
-use tracing::{debug, info, error};
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tracing::{debug, info};
 use uuid::Uuid;
 
 /// A single AI agent worker
@@ -15,10 +18,16 @@ pub struct Agent {
     conversation: Vec<Message>,
     system_prompt: String,
     available_tools: Vec<String>,
+    mcp_mgr: Option<Arc<Mutex<McpManager>>>,
 }
 
 impl Agent {
-    pub fn new(name: &str, role: AgentRole, backend: LlmBackend) -> Self {
+    pub fn new(
+        name: &str,
+        role: AgentRole,
+        backend: LlmBackend,
+        mcp_mgr: Option<Arc<Mutex<McpManager>>>,
+    ) -> Self {
         let system_prompt = build_system_prompt(&role);
         Self {
             id: Uuid::new_v4(),
@@ -38,6 +47,7 @@ impl Agent {
                 "agent_message".into(),
                 "create_subtask".into(),
             ],
+            mcp_mgr,
         }
     }
 
@@ -67,14 +77,18 @@ impl Agent {
                 .chat(&self.conversation, Some(&self.system_prompt))
                 .await?;
 
-            debug!("Agent {} response: {}", self.name, &response[..response.len().min(200)]);
+            debug!(
+                "Agent {} response: {}",
+                self.name,
+                &response[..response.len().min(200)]
+            );
 
             // Check if the response contains a tool call (JSON block)
             if let Some(tool_call) = parse_tool_call(&response) {
                 info!("Agent {} calling tool: {}", self.name, tool_call.tool_name());
 
-                // Execute the tool
-                let result = tools::execute_tool(&tool_call).await;
+                // Execute the tool (with MCP manager if available)
+                let result = tools::execute_tool(&tool_call, self.mcp_mgr.as_ref()).await;
 
                 // Add assistant response + tool result to conversation
                 self.conversation.push(Message {
@@ -146,7 +160,7 @@ Available tools:
 - shell_exec: Run a shell command. Args: {{"command": "ls -la"}}
 - file_read: Read a file. Args: {{"path": "/path/to/file"}}
 - file_write: Write a file. Args: {{"path": "/path/to/file", "content": "..."}}
-- mcp_call: Call an MCP server tool. Args: {{"server": "url", "tool": "name", "args": {{...}}}}
+- mcp_call: Call an MCP server tool. Args: {{"server": "server_name", "tool": "name", "args": {{...}}}}
 - agent_message: Message another agent. Args: {{"target": "agent-id", "message": "..."}}
 - create_subtask: Create a subtask. Args: {{"title": "...", "description": "..."}}
 
@@ -165,7 +179,10 @@ fn parse_tool_call(response: &str) -> Option<Tool> {
 
     let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
     let tool_name = parsed.get("tool")?.as_str()?;
-    let args = parsed.get("args").cloned().unwrap_or(serde_json::Value::Null);
+    let args = parsed
+        .get("args")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
 
     match tool_name {
         "web_search" => Some(Tool::WebSearch {
