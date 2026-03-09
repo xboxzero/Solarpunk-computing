@@ -37,3 +37,7 @@ dotenvy = "0.15"
 # TUI
 ratatui = "0.29"
 crossterm = "0.28"
+
+# Web UI
+axum = "0.8"
+tokio-stream = "0.1"

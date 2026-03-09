@@ -4,6 +4,7 @@ mod orchestrator;
 mod tools;
 mod tui;
 mod types;
+mod web;
 
 use clap::Parser;
 use types::*;
@@ -32,6 +33,14 @@ struct Cli {
     /// Max agents
     #[arg(long, default_value = "10")]
     max_agents: usize,
+
+    /// Run web UI instead of TUI (for phone/browser access)
+    #[arg(short, long)]
+    web: bool,
+
+    /// Web UI port
+    #[arg(short, long, default_value = "8888")]
+    port: u16,
 }
 
 #[tokio::main]
@@ -45,12 +54,12 @@ async fn main() {
             model: cli.model,
         },
         "openai" => LlmBackend::OpenAiCompat {
-            endpoint: cli.endpoint,
+            endpoint: cli.endpoint.clone(),
             api_key: cli.api_key.unwrap_or_default(),
             model: cli.model,
         },
         _ => LlmBackend::LocalLlama {
-            endpoint: cli.endpoint,
+            endpoint: cli.endpoint.clone(),
             model: cli.model,
         },
     };
@@ -63,8 +72,15 @@ async fn main() {
         workspace_dir: ".".into(),
     };
 
-    if let Err(e) = tui::run_tui(config).await {
-        eprintln!("Error: {e}");
-        std::process::exit(1);
+    if cli.web {
+        if let Err(e) = web::run_web(config, cli.port).await {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+    } else {
+        if let Err(e) = tui::run_tui(config).await {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
     }
 }

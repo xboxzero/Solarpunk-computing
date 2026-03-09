@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Solarpunk Agent</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #0a0a0a; --surface: #141414; --border: #2a2a2a;
+  --green: #0f0; --cyan: #0ff; --yellow: #ff0; --red: #f44;
+  --text: #e0e0e0; --dim: #666;
+}
+html, body { height: 100%; overflow: hidden; }
+body {
+  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  background: var(--bg); color: var(--text);
+  display: flex; flex-direction: column; height: 100dvh;
+}
+
+/* Header */
+.header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px; background: var(--surface); border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.header h1 { font-size: 14px; color: var(--green); }
+.header .status { font-size: 11px; color: var(--dim); }
+
+/* Agent bar */
+.agent-bar {
+  display: flex; gap: 6px; padding: 6px 12px; overflow-x: auto;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.agent-chip {
+  padding: 4px 10px; border-radius: 12px; font-size: 11px;
+  border: 1px solid var(--border); cursor: pointer; white-space: nowrap;
+  background: var(--bg); color: var(--dim); transition: all 0.2s;
+}
+.agent-chip.active { border-color: var(--cyan); color: var(--cyan); background: #0ff1; }
+.agent-chip.add { border-style: dashed; color: var(--green); }
+
+/* Chat area */
+.chat {
+  flex: 1; overflow-y: auto; padding: 12px;
+  -webkit-overflow-scrolling: touch;
+}
+.msg { margin-bottom: 12px; animation: fadeIn 0.2s; }
+.msg .role {
+  font-size: 10px; font-weight: bold; text-transform: uppercase;
+  margin-bottom: 2px;
+}
+.msg .role.you { color: var(--cyan); }
+.msg .role.agent { color: var(--green); }
+.msg .role.system { color: var(--yellow); }
+.msg .role.error { color: var(--red); }
+.msg .content {
+  font-size: 13px; line-height: 1.5; white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.msg .content code {
+  background: var(--surface); padding: 1px 4px; border-radius: 3px;
+  font-size: 12px;
+}
+.typing { color: var(--dim); font-style: italic; }
+
+@keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
+
+/* Input area */
+.input-area {
+  display: flex; gap: 8px; padding: 8px 12px;
+  background: var(--surface); border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.input-area input {
+  flex: 1; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 14px; color: var(--text);
+  font-family: inherit; font-size: 14px; outline: none;
+}
+.input-area input:focus { border-color: var(--cyan); }
+.input-area button {
+  background: var(--green); color: #000; border: none;
+  border-radius: 8px; padding: 10px 16px; font-family: inherit;
+  font-size: 14px; font-weight: bold; cursor: pointer;
+}
+.input-area button:disabled { opacity: 0.3; }
+.input-area button:active { transform: scale(0.95); }
+
+/* Spawn modal */
+.modal-overlay {
+  display: none; position: fixed; inset: 0; background: #000a;
+  z-index: 100; align-items: center; justify-content: center;
+}
+.modal-overlay.show { display: flex; }
+.modal {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; padding: 20px; width: 90%; max-width: 320px;
+}
+.modal h2 { font-size: 14px; color: var(--green); margin-bottom: 12px; }
+.modal input, .modal select {
+  width: 100%; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 8px 12px; color: var(--text);
+  font-family: inherit; font-size: 13px; margin-bottom: 8px; outline: none;
+}
+.modal .btn-row { display: flex; gap: 8px; margin-top: 12px; }
+.modal .btn-row button {
+  flex: 1; padding: 8px; border-radius: 6px; font-family: inherit;
+  font-size: 13px; cursor: pointer; border: none;
+}
+.modal .btn-cancel { background: var(--border); color: var(--text); }
+.modal .btn-ok { background: var(--green); color: #000; font-weight: bold; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>SOLARPUNK AGENT</h1>
+  <span class="status" id="status">connecting...</span>
+</div>
+
+<div class="agent-bar" id="agentBar">
+  <div class="agent-chip add" onclick="showSpawnModal()">+ add</div>
+</div>
+
+<div class="chat" id="chat"></div>
+
+<div class="input-area">
+  <input type="text" id="input" placeholder="Type a message..." autocomplete="off"
+         onkeydown="if(event.key==='Enter')sendMsg()">
+  <button id="sendBtn" onclick="sendMsg()">Send</button>
+</div>
+
+<!-- Spawn modal -->
+<div class="modal-overlay" id="spawnModal">
+  <div class="modal">
+    <h2>Spawn Agent</h2>
+    <input type="text" id="agentName" placeholder="Agent name">
+    <select id="agentRole">
+      <option value="general">General</option>
+      <option value="coder">Coder</option>
+      <option value="researcher">Researcher</option>
+      <option value="sysadmin">SysAdmin</option>
+      <option value="mesh">Mesh Operator</option>
+    </select>
+    <div class="btn-row">
+      <button class="btn-cancel" onclick="hideSpawnModal()">Cancel</button>
+      <button class="btn-ok" onclick="spawnAgent()">Create</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let activeAgent = null;
+let agents = [];
+const chat = document.getElementById('chat');
+const input = document.getElementById('input');
+const sendBtn = document.getElementById('sendBtn');
+const statusEl = document.getElementById('status');
+
+function addMsg(role, content) {
+  const d = document.createElement('div');
+  d.className = 'msg';
+  d.innerHTML = `<div class="role ${role}">${role}</div><div class="content">${escHtml(content)}</div>`;
+  chat.appendChild(d);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+async function sendMsg() {
+  const msg = input.value.trim();
+  if (!msg) return;
+  input.value = '';
+  addMsg('you', msg);
+  sendBtn.disabled = true;
+  statusEl.textContent = 'thinking...';
+
+  // Show typing indicator
+  const typing = document.createElement('div');
+  typing.className = 'msg typing';
+  typing.textContent = '...';
+  chat.appendChild(typing);
+  chat.scrollTop = chat.scrollHeight;
+
+  try {
+    const resp = await fetch('/api/chat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ message: msg, agent_id: activeAgent })
+    });
+    const data = await resp.json();
+    typing.remove();
+    addMsg(data.success ? 'agent' : 'error', data.response);
+    statusEl.textContent = 'ready';
+  } catch(e) {
+    typing.remove();
+    addMsg('error', 'Connection failed: ' + e.message);
+    statusEl.textContent = 'error';
+  }
+  sendBtn.disabled = false;
+  input.focus();
+}
+
+async function loadAgents() {
+  try {
+    const resp = await fetch('/api/agents');
+    agents = await resp.json();
+    renderAgents();
+    statusEl.textContent = `${agents.length} agent${agents.length!==1?'s':''}`;
+    if (!activeAgent && agents.length > 0) {
+      activeAgent = agents[0].id;
+      renderAgents();
+    }
+  } catch(e) {
+    statusEl.textContent = 'offline';
+  }
+}
+
+function renderAgents() {
+  const bar = document.getElementById('agentBar');
+  bar.innerHTML = '';
+  agents.forEach(a => {
+    const chip = document.createElement('div');
+    chip.className = 'agent-chip' + (a.id === activeAgent ? ' active' : '');
+    chip.textContent = a.name;
+    chip.onclick = () => { activeAgent = a.id; renderAgents(); };
+    bar.appendChild(chip);
+  });
+  const addBtn = document.createElement('div');
+  addBtn.className = 'agent-chip add';
+  addBtn.textContent = '+ add';
+  addBtn.onclick = showSpawnModal;
+  bar.appendChild(addBtn);
+}
+
+function showSpawnModal() {
+  document.getElementById('spawnModal').classList.add('show');
+  document.getElementById('agentName').focus();
+}
+function hideSpawnModal() {
+  document.getElementById('spawnModal').classList.remove('show');
+}
+
+async function spawnAgent() {
+  const name = document.getElementById('agentName').value.trim() || 'agent';
+  const role = document.getElementById('agentRole').value;
+  hideSpawnModal();
+  try {
+    const resp = await fetch('/api/spawn', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ name, role })
+    });
+    const data = await resp.json();
+    if (data.success) {
+      addMsg('system', `Spawned '${data.name}' (${data.role})`);
+      activeAgent = data.agent_id;
+      loadAgents();
+    }
+  } catch(e) {
+    addMsg('error', 'Spawn failed: ' + e.message);
+  }
+  document.getElementById('agentName').value = '';
+}
+
+// Health check
+async function checkHealth() {
+  try {
+    const r = await fetch('/api/health');
+    const d = await r.json();
+    if (d.status === 'ok') statusEl.textContent = 'v' + d.version;
+  } catch(e) {
+    statusEl.textContent = 'offline';
+  }
+}
+
+// Init
+addMsg('system', 'Welcome to Solarpunk Agent.\nType a message to chat with the AI.\nTap "+ add" to spawn more agents with different roles.');
+loadAgents();
+checkHealth();
+input.focus();
+</script>
+</body>
+</html>
