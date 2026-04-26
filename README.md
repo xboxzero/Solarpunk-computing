@@ -1,243 +1,192 @@
 # Solarpunk Computing
 
-An open-source, solar-powered wearable computer built on ESP32-S3. Program it from Safari on your iPhone. Devices automatically discover each other and form encrypted off-grid mesh networks. Optionally connects to a Raspberry Pi 5 hub for local LLM AI agent capabilities.
+A solar-powered mesh computing platform. ESP32 nodes form encrypted off-grid mesh networks and connect to a Raspberry Pi 5 hub running a browser-accessible web terminal, local AI, and mesh management.
 
-**Firmware version: 0.3.0**
+## How It Works
 
-## What Is This?
+```
+  Phone/Laptop                     Phone/Laptop
+       |                                |
+       | WiFi (captive portal)          | WiFi / Tailscale
+       v                                v
++--------------------+      +----------------------------+
+| ESP32 Node         |      | Raspberry Pi 5 Hub         |
+|                    | WiFi |                            |
+| Web terminal       |----->| sp-hub (Rust)              |
+| Mesh networking    |      |   Web terminal  :8822      |
+| Solar + battery    |      |   Mesh bridge   :8833      |
+| Script engine      |      |                            |
+| LLM client         |      | LLM server      :8080     |
+| AES-256 encryption |      |   llama.cpp (TinyLlama)   |
++--------------------+      |                            |
+       ^                    | Agent orchestrator :8888   |
+       | ESP-NOW (250m)     |   Multi-agent TUI + web   |
+       v                    +----------------------------+
++--------------------+
+| Other ESP32 Nodes  |
+| (auto-discovered)  |
++--------------------+
+```
 
-A tiny, solar-powered computer you can wear that:
-- **Hosts a web IDE** -- connect from Safari on your iPhone, no app needed
-- **Forms mesh networks** -- devices auto-discover each other using ESP-NOW (no WiFi router needed)
-- **Runs on sunlight** -- solar panel + LiPo battery with deep sleep for days of operation
-- **Programmable** -- write and run scripts from the browser-based terminal
-- **AI-powered** -- ask questions or run autonomous agent tasks via a local LLM on Pi 5
-- **Encrypted** -- AES-256-GCM on all mesh traffic, auth tokens on API
-- **Open source** -- hardware designs, firmware, everything
+## Pi 5 Web Terminal System
+
+The Pi 5 hub is the central piece -- open a browser on any device and get a full shell on the Pi. The web terminal runs heavy workloads like Claude Code with no issues.
+
+**sp-hub** is a single Rust binary that replaces the older Python scripts. It serves two main things:
+
+- **Web terminal** (port 8822) -- xterm.js frontend over WebSocket, spawns real PTY shell sessions with process group isolation, zombie reaping, session timeout, and up to 4 concurrent sessions. Handles fast output (16KB read buffer) and proper cleanup on disconnect.
+- **Mesh bridge** (port 8833) -- polls ESP32 nodes on the 10.42.0.x subnet via HTTP every 5s, builds a live topology map, and exposes remote command execution through a web dashboard.
+
+### Running sp-hub
+
+```bash
+cd ~/Solarpunk-computing/hub/sp-hub
+cargo build --release
+./target/release/sp-hub
+```
+
+Then open `http://<pi-ip>:8822` from any browser. On a phone, it works full-screen.
+
+### sp CLI
+
+Command-line tool for interacting with the hub:
+
+```bash
+cd ~/Solarpunk-computing/hub/sp-cli
+cargo build --release
+
+sp connect              # interactive terminal via WebSocket
+sp mesh status          # mesh network topology
+sp mesh send <ip> <cmd> # send command to a node through the bridge
+sp status               # query ESP32 node directly
+sp flash                # build and flash firmware via idf.py
+```
+
+### Agent Orchestrator
+
+Multi-agent AI dashboard with both a terminal UI (ratatui) and web interface:
+
+```bash
+cd ~/Solarpunk-computing/hub/agent-orchestrator
+cargo build --release
+./target/release/agent-orchestrator
+```
+
+Web UI at `http://<pi-ip>:8888`. Supports Claude (auto-detects OAuth token from Claude Code), OpenAI, and local llama.cpp backends. Agent roles: General, Coder, Researcher, SysAdmin, MeshOperator.
+
+### LLM Server
+
+```bash
+cd ~/Solarpunk-computing/pi-server
+./setup-llm.sh
+```
+
+Builds llama.cpp on the Pi, downloads TinyLlama 1.1B (~670MB), and sets up a systemd service on port 8080. ESP32 nodes use the `ask` and `agent` commands to query it.
+
+### WiFi Hotspot
+
+The Pi runs a WiFi hotspot so ESP32 nodes can connect:
+
+```bash
+sudo nmcli device wifi hotspot ifname wlan0 con-name solarpunk-pi ssid solarpunk-pi password solarpunk
+```
+
+Network: `10.42.0.1/24`, DHCP `10.42.0.10-254`. ESP32 nodes auto-connect when `SP_STA_ENABLED=1` in `main/config.h`.
+
+## ESP32 Nodes
+
+Each node is a self-contained solar-powered computer (~$12 BOM):
+
+- **WiFi AP** -- phone connects directly, Safari opens a web terminal via captive portal
+- **ESP-NOW mesh** -- auto-discovery, multi-hop routing (up to 6 hops, 250m per hop), no router needed
+- **AES-256-GCM** -- all mesh traffic encrypted
+- **Solar + battery** -- LiPo charging, deep sleep modes, days of mesh operation
+- **Script engine** -- save and run scripts from SPIFFS
+- **LLM client** -- queries the Pi hub for AI when connected
+
+### Quick Start (ESP32)
+
+```bash
+source ~/esp/esp-idf/export.sh
+cd ~/Solarpunk-computing
+idf.py set-target esp32s3
+idf.py build
+idf.py -p /dev/ttyUSB0 flash monitor
+```
+
+Join WiFi `SolarpunkNode-XXXX` from your phone -- Safari auto-opens the terminal.
+
+### ESP32 Terminal Commands
+
+| Command | Description |
+|---------|-------------|
+| `status` | Battery %, solar mV, peers, uptime, LLM status |
+| `peers` | List discovered mesh nodes |
+| `send <msg>` | Broadcast to all nodes |
+| `send @<node> <msg>` | Unicast to specific node |
+| `exec @<node> <cmd>` | Run command on remote node |
+| `gpio`, `adc`, `battery`, `solar` | Hardware I/O |
+| `ask <question>` | Query LLM (requires Pi connection) |
+| `agent <task>` | Autonomous AI agent |
+| `ls`, `cat`, `write`, `rm` | Script file management |
+| `sleep <sec>` | Enter deep sleep |
 
 ## Hardware
 
-| Component | Part | Purpose | Cost |
-|-----------|------|---------|------|
-| MCU | ESP32-S3-WROOM-1 | Dual-core 240MHz, WiFi+BLE, 512KB SRAM, 8MB PSRAM | $3.50 |
-| Solar Panel | 5V 1W (80x60mm) | Energy harvesting | $2.00 |
-| Charge Controller | TP4056 + DW01A | LiPo charging with protection | $0.25 |
-| Battery | 3.7V 1000mAh LiPo | ~8hr active, days in mesh-sleep mode | $3.00 |
-| Voltage Reg | ME6211 3.3V LDO | Ultra-low quiescent current (40uA) | $0.10 |
-| Display (optional) | SSD1306 0.96" OLED | Status display via I2C | $1.50 |
-| Enclosure | 3D printed (STL files in hardware/) | Wrist-mount or clip-on | ~$2 |
+### ESP32 Node BOM
 
-**Total BOM: ~$15** (see `hardware/bom.csv` for full list)
+| Component | Part | Cost |
+|-----------|------|------|
+| MCU | ESP32-S3-WROOM-1 (8MB flash, 8MB PSRAM) | $3.50 |
+| Solar Panel | 5V 1W (80x60mm) | $2.00 |
+| Charge Controller | TP4056 + DW01A | $0.25 |
+| Battery | 3.7V 1000mAh LiPo | $3.00 |
+| Voltage Regulator | ME6211 3.3V LDO (40uA quiescent) | $0.10 |
+| Display (optional) | SSD1306 0.96" OLED | $1.50 |
 
-### Power Budget
+### Solarpunk Pi v3 Board
 
-| Mode | Current | Duration on 1000mAh |
-|------|---------|---------------------|
-| Active (WiFi AP + Web IDE) | ~120mA | 8 hours |
-| Mesh relay (ESP-NOW only) | ~20mA | 50 hours |
-| Mesh sleep (wake every 30s) | ~0.5mA avg | 83 days |
-| Deep sleep (RTC timer wake) | ~10uA | Years |
+Custom PCB design in `hardware/solarpunk-pi-v3/` (KiCad 9). Multi-processor architecture:
 
-## Quick Start
+- **RK3576** -- main compute (Linux)
+- **RP2350** -- radio co-processor
+- **RK3506J** -- industrial I/O
 
-### 1. Flash the firmware
-```bash
-# Install ESP-IDF v5.x (https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/get-started/)
-cd Solarpunk-computing
-idf.py set-target esp32s3   # or: idf.py set-target esp32
-idf.py build
-idf.py -p /dev/ttyUSB0 flash
-```
-
-### 2. Connect from iPhone
-- Join WiFi: `SolarpunkNode-XXXX` (XXXX = last 2 bytes of MAC, no password)
-- Safari opens automatically (captive portal)
-- You're in the web terminal -- start typing commands
-
-### 3. Mesh networking
-- Power on 2+ devices near each other
-- They auto-discover within seconds via ESP-NOW
-- Type `peers` to see discovered nodes
-- Type `send hello` to broadcast, or `send @NodeName hello` for unicast
-
-### 4. (Optional) Set up Pi 5 hub
-- Run `pi-server/setup-llm.sh` on a Raspberry Pi 5 to install llama.cpp
-- Set up WiFi hotspot "solarpunk-pi" on the Pi
-- ESP32 auto-connects and gains LLM access (`ask` and `agent` commands)
-
-## Architecture
-
-```
-iPhone Safari
-  |
-  | WiFi AP (captive portal)
-  v
-+------------------------------------------------------+
-|  ESP32-S3 Node                                       |
-|                                                      |
-|  +----------+ +-----------+ +----------+ +---------+ |
-|  | Web      | | Script    | | Power    | | LLM     | |
-|  | Server   | | Engine    | | Manager  | | Client  | |
-|  | HTTP+WS  | | Commands  | | Solar+   | | (Pi 5)  | |
-|  |          | | + SPIFFS  | | Sleep    | |         | |
-|  +----------+ +-----------+ +----------+ +---------+ |
-|  +----------+ +--------------------------------------+|
-|  | Security | | Mesh Network (ESP-NOW)               ||
-|  | AES-256  | | Auto-discovery, multi-hop, encrypted ||
-|  | GCM      | +--------------------------------------+|
-|  +----------+                                        |
-+------------------------------------------------------+
-       ^  ESP-NOW (250m, no router)        ^ WiFi STA
-       |                                   |
-+------------------+        +--------------------------+
-| Other Solarpunk  |        | Raspberry Pi 5 Hub       |
-| Nodes            |        | - llama.cpp LLM server   |
-| (auto-discovered)|        | - Web terminal (:8822)   |
-+------------------+        | - Mesh bridge  (:8833)   |
-                            | - Reticulum P2P terminal |
-                            | - Agent orchestrator     |
-                            +--------------------------+
-```
+Datasheet and BOM in `hardware/`.
 
 ## Project Structure
 
 ```
-main/                         # ESP-IDF firmware source
-  main.cpp                    # Entry point, WiFi AP+STA, task startup
-  config.h                    # All configuration in one place
-  web/
-    webserver.cpp/h           # HTTP server + WebSocket terminal
-    captive.cpp/h             # Captive portal (auto-open on iPhone)
-    static/
-      index.html              # Web terminal UI
-      style.css               # Mobile-first dark theme
-      app.js                  # WebSocket client, command history
-  mesh/
-    mesh.cpp/h                # ESP-NOW mesh networking + multi-hop routing
-    discovery.cpp/h           # Auto-discovery + peer table
-    protocol.h                # Message types, formats, beacon structure
-  power/
-    solar.cpp/h               # Battery + solar monitoring (ADC)
-    sleep.cpp/h               # Deep sleep, mesh-sleep, idle detection
-  scripting/
-    engine.cpp/h              # Command interpreter (all terminal commands)
-  llm/
-    llm_client.cpp/h          # LLM query + autonomous agent mode
-  security/
-    crypto.cpp/h              # AES-256-GCM encrypt/decrypt, auth tokens
-  hal/
-    uart.cpp/h                # Serial I/O
-    gpio.cpp/h                # Pin control, LED, charge status
-hub/                          # Pi 5 backend services
-  terminal_server.py          # Reticulum E2E encrypted P2P shell
-  terminal_client.py          # CLI client for Reticulum terminal
-  web_terminal.py             # Browser terminal (xterm.js, port 8822)
-  mesh_bridge.py              # ESP32 mesh <-> Reticulum bridge (port 8833)
-  bridge_client.py            # CLI client to query mesh bridge
-  connect.sh                  # Quick-connect helper
-  agent-orchestrator/         # Rust multi-agent TUI/web dashboard
+main/                       ESP32 firmware (ESP-IDF C++)
+  main.cpp                  Entry point -- WiFi AP+STA, task startup
+  config.h                  All configuration
+  web/                      HTTP server + WebSocket terminal + captive portal
+  mesh/                     ESP-NOW mesh networking + multi-hop routing
+  power/                    Battery/solar monitoring + deep sleep
+  scripting/                Command interpreter
+  llm/                      LLM query + autonomous agent
+  security/                 AES-256-GCM encryption
+  hal/                      GPIO, UART
+hub/                        Pi 5 services
+  sp-hub/                   Rust: web terminal + mesh bridge (primary)
+  sp-cli/                   Rust: CLI tool (connect, mesh, flash, status)
+  agent-orchestrator/       Rust: multi-agent TUI + web dashboard
+  web_terminal.py           Python web terminal (legacy)
+  mesh_bridge.py            Python mesh bridge (legacy)
 pi-server/
-  setup-llm.sh               # One-command LLM install on Pi 5
+  setup-llm.sh              One-command LLM install on Pi 5
 hardware/
-  bom.csv                     # Bill of materials with prices
-  schematic/                  # KiCad PCB files
-  enclosure/                  # 3D printable STL files
-CMakeLists.txt                # ESP-IDF build system
-partitions.csv                # Flash partition layout (1.92MB app + 64KB SPIFFS)
-sdkconfig.defaults            # ESP-IDF defaults (WiFi, ESP-NOW, SPIFFS, power save)
-LICENSE                       # MIT
+  solarpunk-pi-v3/          KiCad PCB design (v3 custom board)
+  bom_v3.csv                Bill of materials
+CMakeLists.txt              ESP-IDF build
+partitions.csv              Flash partition layout
+sdkconfig.defaults          ESP-IDF defaults
 ```
 
-## Web Terminal Commands
+## Setup Guide
 
-| Command | Description |
-|---------|-------------|
-| `help` | List all commands |
-| `status` | Node name, battery %, solar mV, peers, uptime, LLM status |
-| `version` | Firmware version |
-| `free` | Free heap memory |
-| `uptime` | Time since boot |
-| `peers` | List discovered mesh nodes |
-| `send <msg>` | Broadcast message to all nodes |
-| `send @<node> <msg>` | Send to specific node |
-| `exec @<node> <cmd>` | Run command on remote node |
-| `gpio <pin> <0\|1>` | Set GPIO pin |
-| `read <pin>` | Read digital GPIO pin |
-| `adc <pin>` | Read analog value |
-| `battery` | Battery voltage and percentage |
-| `solar` | Solar panel voltage |
-| `sleep <sec>` | Enter deep sleep |
-| `ls` | List saved scripts |
-| `cat <file>` | Read a script |
-| `write <file> <content>` | Save a script to SPIFFS |
-| `rm <file>` | Delete a script |
-| `ask <question>` | Ask the LLM (requires Pi connection) |
-| `agent <task>` | Autonomous AI agent (LLM executes commands) |
-| `token` | Show/set auth token |
-| `reboot` | Reboot the node |
-
-## Mesh Protocol
-
-Devices use ESP-NOW (peer-to-peer, no router, 250m range):
-
-- **Discovery**: Beacon broadcast every 10s with node ID, battery %, solar status, peer count, capabilities, route advertisements
-- **Routing**: Automatic multi-hop (up to 6 hops), each node maintains a neighbor table with signal strength and hop count
-- **Encryption**: AES-256-GCM on all payloads (12-byte IV + ciphertext + 16-byte auth tag)
-- **Message types**: BEACON, TEXT, FILE, SCRIPT, SENSOR, ACK, PING, SLEEP_SYNC, EXEC, RESULT, ROUTE
-- **Max payload**: 250 bytes per ESP-NOW frame
-- **Sleep sync**: Nodes agree on wake windows (30s sleep, 50ms listen) to save power
-- **Peer expiry**: Nodes removed from table after 90s without beacon
-
-## Pi 5 Hub Services
-
-The Pi 5 acts as an optional hub, running services that extend the mesh network:
-
-| Service | Port | Purpose |
-|---------|------|---------|
-| Web terminal | 8822 | Browser-based terminal (xterm.js + WebSocket), can run Claude Code |
-| Mesh bridge | 8833 | ESP32 mesh <-> Reticulum bridge with live web dashboard |
-| Reticulum terminal | 4242 | E2E encrypted P2P shell over Reticulum transport |
-| LLM server | 8080 | llama.cpp HTTP API (TinyLlama 1.1B Q4_K_M) |
-| Agent orchestrator | 8888 | Multi-agent TUI/web dashboard (Rust) |
-
-### Pi WiFi Hotspot
-- SSID: `solarpunk-pi` / Password: `solarpunk`
-- Interface: `ap0` (concurrent AP+STA on Pi 5)
-- IP: `10.42.0.1/24`, DHCP range: `10.42.0.10-254`
-- ESP32 auto-connects via STA mode
-
-### How the Mesh Bridge Works
-1. Pi runs WiFi hotspot on `ap0`
-2. ESP32 connects via STA mode to `solarpunk-pi` network
-3. `mesh_bridge.py` polls ESP32's HTTP API (`/api/status`, `/api/mesh/peers`) every 5s
-4. Exposes mesh state as Reticulum destination (`solarpunk.mesh`)
-5. Web dashboard at `:8833` shows live topology, node stats, remote command exec
-6. Any Reticulum peer can query mesh state via `bridge_client.py`
-
-## Low Power Design
-
-The firmware aggressively manages power:
-1. **Adaptive WiFi**: AP disables after 5 minutes with no connected clients
-2. **Mesh duty cycle**: ESP-NOW wake every 30s, listen for 50ms, sleep rest
-3. **Solar tracking**: ADC monitors panel voltage, detects charging state
-4. **Task shedding**: Non-essential tasks disabled below 20% battery, critical mode at 10%
-5. **Deep sleep**: Full shutdown with RTC wake after 10 minutes idle
-
-## API Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | Web IDE (terminal UI) |
-| `/api/status` | GET | JSON: node name, battery, solar, peers, uptime, LLM |
-| `/api/run` | POST | Execute a command (auth token required) |
-| `/ws` | WebSocket | Real-time terminal I/O |
-
-Auth token: set `SP_AUTH_TOKEN` in `config.h` (default: `solarpunk2026`).
+See [HOWTO.md](HOWTO.md) for detailed installation instructions.
 
 ## License
 
-MIT License -- build whatever you want.
-
-## Contributing
-
-PRs welcome. Open an issue first for big changes.
+MIT
