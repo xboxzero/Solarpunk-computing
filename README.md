@@ -131,29 +131,6 @@ Join WiFi `SolarpunkNode-XXXX` from your phone -- Safari auto-opens the terminal
 | `ls`, `cat`, `write`, `rm` | Script file management |
 | `sleep <sec>` | Enter deep sleep |
 
-## Hardware
-
-### ESP32 Node BOM
-
-| Component | Part | Cost |
-|-----------|------|------|
-| MCU | ESP32-S3-WROOM-1 (8MB flash, 8MB PSRAM) | $3.50 |
-| Solar Panel | 5V 1W (80x60mm) | $2.00 |
-| Charge Controller | TP4056 + DW01A | $0.25 |
-| Battery | 3.7V 1000mAh LiPo | $3.00 |
-| Voltage Regulator | ME6211 3.3V LDO (40uA quiescent) | $0.10 |
-| Display (optional) | SSD1306 0.96" OLED | $1.50 |
-
-### Solarpunk Pi v3 Board
-
-Custom PCB design in `hardware/solarpunk-pi-v3/` (KiCad 9). Multi-processor architecture:
-
-- **RK3576** -- main compute (Linux)
-- **RP2350** -- radio co-processor
-- **RK3506J** -- industrial I/O
-
-Datasheet and BOM in `hardware/`.
-
 ## Project Structure
 
 ```
@@ -175,9 +152,6 @@ hub/                        Pi 5 services
   mesh_bridge.py            Python mesh bridge (legacy)
 pi-server/
   setup-llm.sh              One-command LLM install on Pi 5
-hardware/
-  solarpunk-pi-v3/          KiCad PCB design (v3 custom board)
-  bom_v3.csv                Bill of materials
 CMakeLists.txt              ESP-IDF build
 partitions.csv              Flash partition layout
 sdkconfig.defaults          ESP-IDF defaults

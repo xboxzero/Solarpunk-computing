@@ -221,32 +221,7 @@ ESP32 nodes run AP+STA concurrently: the AP serves the phone web terminal, the S
 
 ---
 
-## 4. Hardware
-
-| Component | Part | Cost |
-|-----------|------|------|
-| MCU | ESP32-S3-WROOM-1 (8MB flash, 8MB PSRAM) | $3.50 |
-| Solar Panel | 5V 1W (80x60mm) | $2.00 |
-| Charge Controller | TP4056 + DW01A | $0.25 |
-| Battery | 3.7V 1000mAh LiPo | $3.00 |
-| Voltage Regulator | ME6211 3.3V LDO (40uA quiescent) | $0.10 |
-| Display (optional) | SSD1306 0.96" OLED | $1.50 |
-
-Total: ~$12 per node. Full BOM in `hardware/bom.csv`.
-
-### Wiring
-
-```
-Solar 5V --> TP4056 IN+/IN- --> LiPo battery
-TP4056 OUT+/OUT- --> ME6211 3.3V LDO --> ESP32 3V3/GND
-
-Battery ADC:  BAT+ -- 100K -- GPIO4 -- 100K -- GND
-Solar ADC:    Solar+ -- 100K -- GPIO5 -- 100K -- GND
-Charge stat:  TP4056 CHRG --> GPIO15
-OLED:         SDA=GPIO21, SCL=GPIO22
-```
-
-### Troubleshooting
+## 4. Troubleshooting
 
 - **Flash fails**: use a data-capable USB cable, hold BOOT while pressing RESET, try `idf.py erase-flash`
 - **No captive portal on iPhone**: go to `http://192.168.4.1` manually
