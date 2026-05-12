@@ -1,8 +1,5 @@
 pub const TERMINAL_PORT: u16 = 8822;
 pub const BRIDGE_PORT: u16 = 8833;
-pub const RECORDER_PORT: u16 = 8844;
-pub const RECORDER_TLS_PORT: u16 = 8845;
-pub const SOLARMIX_PORT: u16 = 8855;
 pub const MAX_SESSIONS: usize = 4;
 pub const READ_BUFFER: usize = 16384;
 pub const SESSION_TIMEOUT_SECS: u64 = 3600;
